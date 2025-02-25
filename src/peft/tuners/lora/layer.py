@@ -186,8 +186,10 @@ class LoraLayer(BaseTunerLayer):
                 # initialize A the same way as the default for nn.Linear and B to zero
                 # https://github.com/microsoft/LoRA/blob/a0a92e0f26c067cf94747bdbf1ce73793fa44d19/loralib/layers.py#L124
                 nn.init.kaiming_uniform_(self.lora_A[adapter_name].weight, a=math.sqrt(5))
+                nn.init.zeros_(self.lora_B[adapter_name].weight)
             elif init_lora_weights.lower() == "gaussian":
                 nn.init.normal_(self.lora_A[adapter_name].weight, std=1 / self.r[adapter_name])
+                nn.init.zeros_(self.lora_B[adapter_name].weight)
             elif init_lora_weights.lower() == "reverse":
                 # Reverse initialization: A with zeros, B with kaiming_uniform
                 nn.init.zeros_(self.lora_A[adapter_name].weight)
@@ -264,7 +266,6 @@ class LoraLayer(BaseTunerLayer):
                     ).contiguous()
             else:
                 raise ValueError(f"Unknown initialization {init_lora_weights=}")
-            nn.init.zeros_(self.lora_B[adapter_name].weight)
             if self.lora_bias[adapter_name]:
                 nn.init.zeros_(self.lora_B[adapter_name].bias)
         if adapter_name in self.lora_embedding_A.keys():
