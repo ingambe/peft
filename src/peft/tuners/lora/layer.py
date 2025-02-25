@@ -200,19 +200,62 @@ class LoraLayer(BaseTunerLayer):
                 out_features = self.out_features
 
                 with torch.no_grad():
-                    # QR decomposition of a random matrix
-                    X = torch.randn(r, r)
+                    # If r is odd, use r+1 to ensure even split, then truncate
+                    r_eff = r + 1 if r % 2 != 0 else r
+                    X = torch.randn(r_eff, r_eff)
                     Q, _ = torch.linalg.qr(X)
 
-                    # Split into two sets for A and B
-                    set1 = Q[0::2, :]  # Odd rows
-                    set2 = Q[1::2, :]  # Even rows
+                    # Split into two equal sets
+                    set1 = Q[0::2, :]  # r_eff/2 rows
+                    set2 = Q[1::2, :]  # r_eff/2 rows
 
-                    # Generate weights with scaling factor as per article
-                    a_wt = torch.randn(in_features, r // 2).mm(set1).T / 10.0
-                    b_wt = torch.randn(r // 2, out_features).T.mm(set2) / 10.0
+                    # if necessary truncate to r
+                    a_wt_full = torch.randn(in_features, r_eff // 2).mm(set1).T / 10.0
+                    b_wt_full = (
+                        torch.randn(r_eff // 2, out_features).T.mm(set2) / 10.0
+                    )  # Shape: (out_features, r_eff/2)
 
-                    # Assign to lora_A and lora_B weights
+                    # Truncate to r if r was odd
+                    if r % 2 != 0:
+                        a_wt = a_wt_full[: r // 2 + 1, :]
+                        b_wt = b_wt_full[:, : r // 2 + 1]
+                    else:
+                        a_wt = a_wt_full
+                        b_wt = b_wt_full
+
+                    # Assign weights
+                    self.lora_A[adapter_name].weight.data = a_wt.to(
+                        self.lora_A[adapter_name].weight.dtype
+                    ).contiguous()
+                    self.lora_B[adapter_name].weight.data = b_wt.to(
+                        self.lora_B[adapter_name].weight.dtype
+                    ).contiguous()
+            elif init_lora_weights.lower() == "adaptive_orthogonal":
+                r = self.r[adapter_name]
+                in_features = self.in_features
+                out_features = self.out_features
+
+                with torch.no_grad():
+                    # Adaptive scaling based on layer size and rank
+                    scale_a = 1.0 / math.sqrt(max(in_features, r))
+                    scale_b = 1.0 / math.sqrt(max(out_features, r))
+                    print(f"scale_a: {scale_a}, scale_b: {scale_b}")
+
+                    # Initialize lora_A with orthogonal vectors
+                    X_a = torch.randn(r, in_features)
+                    Q_a, _ = torch.linalg.qr(X_a.T)  # Q_a: (in_features, r) if r <= in_features
+                    a_wt = Q_a[:, :r].T * scale_a  # Shape: (r, in_features)
+
+                    # Initialize lora_B in the null space of a_wt for AB = 0
+                    _, _, Vh = torch.svd(a_wt.T)  # a_wt.T: (in_features, r)
+                    if r < in_features:
+                        null_space = Vh.T[:, r:]  # Shape: (in_features, in_features - r)
+                        b_wt = torch.randn(out_features, in_features - r) @ null_space.T @ a_wt * scale_b
+                    else:
+                        # If r >= in_features, null space is trivial; use zeros as fallback
+                        b_wt = torch.zeros(out_features, r, dtype=a_wt.dtype)
+
+                    # Assign weights
                     self.lora_A[adapter_name].weight.data = a_wt.to(
                         self.lora_A[adapter_name].weight.dtype
                     ).contiguous()
