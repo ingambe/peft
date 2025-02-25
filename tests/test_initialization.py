@@ -146,6 +146,131 @@ class TestLoraInitialization:
         # check that weight B is zero
         assert (weight_B == 0.0).all()
 
+    def test_lora_linear_init_reverse(self):
+        torch.manual_seed(0)
+
+        model = self.get_model()
+        config = LoraConfig(target_modules=["linear"], init_lora_weights="reverse")
+        model = get_peft_model(model, config)
+        weight_A = model.linear.lora_A["default"].weight
+        weight_B = model.linear.lora_B["default"].weight
+
+        # Check that weight A is zero
+        assert (weight_A == 0.0).all()
+
+        # Xheck if weight B is from a uniform distribution (kaiming_uniform)
+        unif = self.get_uniform(weight_B.min().item(), weight_B.max().item())
+        _, p_value = stats.kstest(weight_B.detach().flatten().cpu().numpy(), unif.flatten().cpu().numpy())
+        assert p_value > 0.5, f"p-value {p_value} suggests weight_B is not uniformly distributed"
+
+        # Check that weight B is *not* from a normal distribution
+        normal = self.get_normal(weight_B.mean().item(), weight_B.std().item())
+        _, p_value = stats.kstest(weight_B.detach().flatten().cpu().numpy(), normal.flatten().cpu().numpy())
+        assert p_value < 0.05, f"p-value {p_value} suggests weight_B might be normally distributed"
+
+    def test_lora_linear_init_orthogonal(self):
+        torch.manual_seed(0)
+
+        model = self.get_model()
+        config = LoraConfig(target_modules=["linear"], init_lora_weights="orthogonal", r=8)
+        model = get_peft_model(model, config)
+        weight_A = model.linear.lora_A["default"].weight
+        weight_B = model.linear.lora_B["default"].weight
+
+        # A.T @ A and B @ B.T should be close identity matrices
+        rank = config.r
+        a_inner = weight_A.T @ weight_A
+        b_inner = weight_B @ weight_B.T
+
+        # Half rank due to splitting in orthogonal init
+        identity = torch.eye(rank // 2, device=self.torch_device)
+        # e care about orthogonality, not magnitude
+        a_norm = torch.norm(a_inner)
+        b_norm = torch.norm(b_inner)
+        a_inner_normalized = a_inner / a_norm if a_norm != 0 else a_inner
+        b_inner_normalized = b_inner / b_norm if b_norm != 0 else b_inner
+
+        # Check if close to identity, floating point imprecision
+        assert torch.allclose(a_inner_normalized, identity, atol=1e-2), "weight_A is not orthogonal"
+        assert torch.allclose(b_inner_normalized, identity, atol=1e-2), "weight_B is not orthogonal"
+
+        # Check that A @ B is zero (initial ΔW = 0)
+        delta_W = weight_B @ weight_A
+        assert torch.allclose(delta_W, torch.zeros_like(delta_W), atol=1e-6), "ΔW is not zero at initialization"
+
+    def test_lora_linear_init_reverse_identity(self, data):
+        # Test that reverse initialization results in an identity transformation
+        torch.manual_seed(0)
+
+        model = self.get_model()
+        output_base = model(data)[0]
+        config = LoraConfig(target_modules=["linear"], init_lora_weights="reverse")
+        peft_model = get_peft_model(model, config)
+        output_reverse = peft_model(data)[0]
+
+        # Check that the output is close (identity transformation)
+        assert torch.allclose(output_base, output_reverse, atol=1e-6), "Reverse init does not preserve identity"
+
+    def test_lora_linear_init_orthogonal_identity(self, data):
+        # Test that orthogonal initialization leads to an identity transformation at init
+        torch.manual_seed(0)
+
+        model = self.get_model()
+        output_base = model(data)[0]
+        config = LoraConfig(target_modules=["linear"], init_lora_weights="orthogonal", r=8)
+        peft_model = get_peft_model(model, config)
+        output_ortho = peft_model(data)[0]
+
+        # Check that the output is close (identity transformation)
+        assert torch.allclose(output_base, output_ortho, atol=1e-6), "Orthogonal init does not preserve identity"
+
+    def test_lora_conv2d_init_reverse(self):
+        torch.manual_seed(0)
+
+        model = self.get_model()
+        config = LoraConfig(target_modules=["conv2d"], init_lora_weights="reverse")
+        model = get_peft_model(model, config)
+        weight_A = model.conv2d.lora_A["default"].weight
+        weight_B = model.conv2d.lora_B["default"].weight
+
+        # Reversed so A is 0 and B is kaiming_uniform
+        assert (weight_A == 0.0).all()
+
+        # B is from a uniform distribution
+        unif = self.get_uniform(weight_B.min().item(), weight_B.max().item())
+        _, p_value = stats.kstest(weight_B.detach().flatten().cpu().numpy(), unif.flatten().cpu().numpy())
+        assert p_value > 0.5, f"p-value {p_value} suggests weight_B is not uniformly distributed"
+
+        # B is *not* from a normal distribution
+        normal = self.get_normal(weight_B.mean().item(), weight_B.std().item())
+        _, p_value = stats.kstest(weight_B.detach().flatten().cpu().numpy(), normal.flatten().cpu().numpy())
+        assert p_value < 0.05, f"p-value {p_value} suggests weight_B might be normally distributed"
+
+    def test_lora_conv2d_init_orthogonal(self):
+        torch.manual_seed(0)
+
+        model = self.get_model()
+        config = LoraConfig(target_modules=["conv2d"], init_lora_weights="orthogonal", r=8)
+        model = get_peft_model(model, config)
+        weight_A = model.conv2d.lora_A["default"].weight
+        weight_B = model.conv2d.lora_B["default"].weight
+
+        # A.T @ A and B @ B.T should be close to identity matrices
+        rank = config.r
+        a_inner = torch.einsum("oihw,ojhw->ij", weight_A, weight_A)  # Shape: (r, r)
+        b_inner = torch.einsum("oihw,oihx->hw", weight_B, weight_B)  # Shape: (r, r)
+        identity = torch.eye(rank // 2, device=self.torch_device)
+
+        # Normalize to account for scaling
+        a_norm = torch.norm(a_inner)
+        b_norm = torch.norm(b_inner)
+        a_inner_normalized = a_inner / a_norm if a_norm != 0 else a_inner
+        b_inner_normalized = b_inner / b_norm if b_norm != 0 else b_inner
+
+        # Check if close to identity
+        assert torch.allclose(a_inner_normalized, identity, atol=1e-2), "weight_A is not orthogonal"
+        assert torch.allclose(b_inner_normalized, identity, atol=1e-2), "weight_B is not orthogonal"
+
     def test_lora_linear_false(self):
         torch.manual_seed(0)
 

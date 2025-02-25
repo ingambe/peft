@@ -188,6 +188,37 @@ class LoraLayer(BaseTunerLayer):
                 nn.init.kaiming_uniform_(self.lora_A[adapter_name].weight, a=math.sqrt(5))
             elif init_lora_weights.lower() == "gaussian":
                 nn.init.normal_(self.lora_A[adapter_name].weight, std=1 / self.r[adapter_name])
+            elif init_lora_weights.lower() == "reverse":
+                # Reverse initialization: A with zeros, B with kaiming_uniform
+                nn.init.zeros_(self.lora_A[adapter_name].weight)
+                nn.init.kaiming_uniform_(self.lora_B[adapter_name].weight, a=math.sqrt(5))
+            elif init_lora_weights.lower() == "orthogonal":
+                # Orthogonal initialization using QR decomposition
+                # See: https://datta0.github.io/posts/rethink-lora-init/
+                r = self.r[adapter_name]
+                in_features = self.in_features
+                out_features = self.out_features
+
+                with torch.no_grad():
+                    # QR decomposition of a random matrix
+                    X = torch.randn(r, r)
+                    Q, _ = torch.linalg.qr(X)
+
+                    # Split into two sets for A and B
+                    set1 = Q[0::2, :]  # Odd rows
+                    set2 = Q[1::2, :]  # Even rows
+
+                    # Generate weights with scaling factor as per article
+                    a_wt = torch.randn(in_features, r // 2).mm(set1).T / 10.0
+                    b_wt = torch.randn(r // 2, out_features).T.mm(set2) / 10.0
+
+                    # Assign to lora_A and lora_B weights
+                    self.lora_A[adapter_name].weight.data = a_wt.to(
+                        self.lora_A[adapter_name].weight.dtype
+                    ).contiguous()
+                    self.lora_B[adapter_name].weight.data = b_wt.to(
+                        self.lora_B[adapter_name].weight.dtype
+                    ).contiguous()
             else:
                 raise ValueError(f"Unknown initialization {init_lora_weights=}")
             nn.init.zeros_(self.lora_B[adapter_name].weight)
