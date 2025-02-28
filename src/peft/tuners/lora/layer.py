@@ -272,6 +272,40 @@ class LoraLayer(BaseTunerLayer):
                     self.lora_B[adapter_name].weight.data = b_wt.to(
                         self.lora_B[adapter_name].weight.dtype
                     ).contiguous()
+            elif init_lora_weights.lower() == "zero_adaptive_orthogonal":
+                r = self.r[adapter_name]
+                in_features = self.in_features
+                out_features = self.out_features
+
+                with torch.no_grad():
+                    scale_a = 1.0 / math.sqrt(max(in_features, r))
+                    scale_b = 1.0 / math.sqrt(max(out_features, r))
+                    print(f"scale_a: {scale_a}, scale_b: {scale_b}")
+
+                    X_a = torch.randn(r, in_features)
+                    Q_a, _ = torch.linalg.qr(X_a.T)
+                    a_wt = Q_a[:, :r].T * scale_a
+
+                    # Initialize lora_B with its own orthogonal initialization
+                    X_b = torch.randn(out_features, r)
+                    Q_b, _ = torch.linalg.qr(X_b)
+                    B_initial = Q_b * scale_b
+
+                    # Compute the right pseudo-inverse of a_wt: a_wt^+ = a_wt.T @ inv(a_wt @ a_wt.T)
+                    # Might be slow for large matrices, should be fine for LoRA
+                    a_wt_pinv = a_wt.T @ torch.linalg.inv(a_wt @ a_wt.T)
+
+                    # Project B_initial onto the null component of a_wt:
+                    correction = (B_initial @ a_wt) @ a_wt_pinv
+                    b_wt = B_initial - correction
+
+                    self.lora_A[adapter_name].weight.data = a_wt.to(
+                        self.lora_A[adapter_name].weight.dtype
+                    ).contiguous()
+                    self.lora_B[adapter_name].weight.data = b_wt.to(
+                        self.lora_B[adapter_name].weight.dtype
+                    ).contiguous()
+
             else:
                 raise ValueError(f"Unknown initialization {init_lora_weights=}")
             if self.lora_bias[adapter_name]:
