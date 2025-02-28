@@ -278,8 +278,8 @@ class LoraLayer(BaseTunerLayer):
                 out_features = self.out_features
 
                 with torch.no_grad():
-                    scale_a = 1.0 / math.sqrt(max(in_features, r))
-                    scale_b = 1.0 / math.sqrt(max(out_features, r))
+                    scale_a = 1.0 / r
+                    scale_b = 1.0 / r
                     print(f"scale_a: {scale_a}, scale_b: {scale_b}")
 
                     X_a = torch.randn(r, in_features)
